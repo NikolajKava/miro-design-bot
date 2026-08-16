@@ -1,0 +1,67 @@
+name: Разбор видео из Telegram
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: telegram-poll
+  cancel-in-progress: false
+
+env:
+  # Движок живёт в другом репозитории. Тег, а не main: обновления приезжают
+  # тогда, когда его двигают, а не в момент любого коммита в движок.
+  ENGINE_REPO: NikolajKava/miro-tools-bot
+  ENGINE_REF: v1
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Забрать движок
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ENGINE_REPO }}
+          ref: ${{ env.ENGINE_REF }}
+
+      - name: Забрать профиль этого каталога
+        uses: actions/checkout@v4
+        with:
+          path: .profile
+
+      - name: Наложить профиль на движок
+        run: cp .profile/profile.json profile.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Забрать новые сообщения и скачать видео
+        id: poll
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALLOWED_CHATS: ${{ vars.TELEGRAM_ALLOWED_CHATS }}
+        run: python scripts/poll_telegram.py
+
+      - uses: actions/setup-node@v4
+        if: steps.poll.outputs.has_jobs == '1'
+        with:
+          node-version: "22"
+
+      - name: Поставить ffmpeg, yt-dlp и Claude Code
+        if: steps.poll.outputs.has_jobs == '1'
+        run: |
+          command -v ffmpeg >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; }
+          pip install --quiet yt-dlp
+          npm install -g --silent @anthropic-ai/claude-code
+
+      - name: Разобрать видео и записать на доску
+        if: steps.poll.outputs.has_jobs == '1'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          MIRO_TOKEN: ${{ secrets.MIRO_TOKEN }}
+          MIRO_BOARD_URL: ${{ vars.MIRO_BOARD_URL }}
+        run: python scripts/process.py
